@@ -58,11 +58,12 @@ app.get('/v1/models', (req, res) => {
 
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
+  let nimModel; // declared here so it's visible in the catch block below
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
     // Smart model selection with fallback
-    let nimModel = MODEL_MAPPING[model];
+    nimModel = MODEL_MAPPING[model];
     if (!nimModel) {
       try {
         await axios.post(`${NIM_API_BASE}/chat/completions`, {
@@ -100,16 +101,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
-    
-console.log('Sending to NVIDIA:', NIM_API_BASE, '| model:', nimModel);
-
-const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-  headers: {
-    'Authorization': `Bearer ${NIM_API_KEY}`,
-    'Content-Type': 'application/json'
-  },
-  responseType: stream ? 'stream' : 'json'
-});
     
     // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
@@ -224,7 +215,10 @@ const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest
     }
     
   } catch (error) {
-    console.error('Proxy error:', error.message);
+    // 🔧 FIX: logs which model was requested and NVIDIA's actual error detail,
+    // instead of just the generic axios message. Check your host's log tab
+    // for a line starting with "Proxy error |" to see the real cause.
+    console.error('Proxy error | model:', nimModel, '| status:', error.response?.status, '| detail:', JSON.stringify(error.response?.data));
     
     res.status(error.response?.status || 500).json({
       error: {
