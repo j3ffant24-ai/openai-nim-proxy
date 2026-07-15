@@ -20,15 +20,16 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
 
-// Model mapping (adjust based on available NIM models)
+// Model mapping (adjust based on available NIM models — verify against YOUR
+// account's /v1/models list first, see Step 1.4. Last verified for this account: July 2026.)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
-  'gpt-4-turbo': 'moonshotai/kimi-k2.6,',
-  'gpt-4o': 'deepseek-ai/deepseek-v3.2',
+  'gpt-4': 'z-ai/glm-5.2',
+  'gpt-4-turbo': 'moonshotai/kimi-k2.6',
+  'gpt-4o': 'deepseek-ai/deepseek-v4-pro',
   'claude-3-opus': 'openai/gpt-oss-120b',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
-  'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking' 
+  'gemini-pro': 'qwen/qwen3-next-80b-a3b-instruct' 
 };
 
 // Health check endpoint
