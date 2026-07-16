@@ -61,7 +61,7 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   let nimModel; // declared here so it's visible in the catch block below
   try {
-    const { model, messages, temperature, max_tokens, stream } = req.body;
+    const { model, messages, temperature, max_tokens, stream, stop } = req.body;
     
     // Smart model selection with fallback
     nimModel = MODEL_MAPPING[model];
@@ -99,6 +99,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       messages: messages,
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
+      stop: stop || undefined, // 🔧 FIX: forward stop sequences (e.g. <|im_end|>) so models actually cut off cleanly instead of leaking control tokens
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
