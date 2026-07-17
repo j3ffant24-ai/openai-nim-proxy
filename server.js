@@ -58,6 +58,30 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
+// Calls NVIDIA with automatic retry on temporary server errors (503/502/504) —
+// free-tier model endpoints occasionally return these under load, and they
+// usually succeed on a quick retry rather than needing the user to resend.
+async function callNimWithRetry(nimRequest, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+        headers: {
+          'Authorization': `Bearer ${NIM_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        responseType: nimRequest.stream ? 'stream' : 'json'
+      });
+    } catch (error) {
+      const status = error.response?.status;
+      const isRetryable = status === 503 || status === 502 || status === 504;
+      if (!isRetryable || attempt === maxRetries) throw error;
+      const waitMs = 1000 * Math.pow(2, attempt); // 1s, then 2s, then 4s
+      console.log(`NVIDIA returned ${status}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+  }
+}
+
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   let nimModel; // declared here so it's visible in the catch block below
@@ -104,14 +128,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
     
-    // Make request to NVIDIA NIM API
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-      headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      responseType: stream ? 'stream' : 'json'
-    });
+    // Make request to NVIDIA NIM API (auto-retries on transient 503/502/504)
+    const response = await callNimWithRetry(nimRequest);
     
     if (stream) {
       // Handle streaming response with reasoning
