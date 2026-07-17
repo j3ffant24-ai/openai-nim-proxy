@@ -2,6 +2,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { StringDecoder } = require('string_decoder'); // correctly handles multi-byte UTF-8 chars split across chunks
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -61,7 +62,7 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   let nimModel; // declared here so it's visible in the catch block below
   try {
-    const { model, messages, temperature, max_tokens, stream, stop } = req.body;
+    const { model, messages, temperature, max_tokens, stream } = req.body;
     
     // Smart model selection with fallback
     nimModel = MODEL_MAPPING[model];
@@ -99,7 +100,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       messages: messages,
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
-      stop: stop || undefined, // 🔧 FIX: forward stop sequences (e.g. <|im_end|>) so models actually cut off cleanly instead of leaking control tokens
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
@@ -121,64 +121,73 @@ app.post('/v1/chat/completions', async (req, res) => {
       
       let buffer = '';
       let reasoningStarted = false;
-      
-      response.data.on('data', (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        
-        lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            if (line.includes('[DONE]')) {
-              res.write(line + '\n');
-              return;
-            }
-            
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.choices?.[0]?.delta) {
-                const reasoning = data.choices[0].delta.reasoning_content;
-                const content = data.choices[0].delta.content;
-                
-                if (SHOW_REASONING) {
-                  let combinedContent = '';
-                  
-                  if (reasoning && !reasoningStarted) {
-                    combinedContent = '<think>\n' + reasoning;
-                    reasoningStarted = true;
-                  } else if (reasoning) {
-                    combinedContent = reasoning;
-                  }
-                  
-                  if (content && reasoningStarted) {
-                    combinedContent += '</think>\n\n' + content;
-                    reasoningStarted = false;
-                  } else if (content) {
-                    combinedContent += content;
-                  }
-                  
-                  if (combinedContent) {
-                    data.choices[0].delta.content = combinedContent;
-                    delete data.choices[0].delta.reasoning_content;
-                  }
-                } else {
-                  if (content) {
-                    data.choices[0].delta.content = content;
-                  } else {
-                    data.choices[0].delta.content = '';
-                  }
-                  delete data.choices[0].delta.reasoning_content;
-                }
+      const decoder = new StringDecoder('utf8'); // 🔧 FIX: buffers partial multi-byte chars across chunk boundaries instead of corrupting them
+
+      // 🔧 FIX: extracted so the leftover buffer can be flushed on 'end' too, instead of being silently dropped
+      const processLine = (line) => {
+        if (!line.startsWith('data: ')) return;
+
+        if (line.includes('[DONE]')) {
+          res.write('data: [DONE]\n\n'); // 🔧 FIX: was missing the trailing blank line every SSE event needs
+          return;
+        }
+
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.choices?.[0]?.delta) {
+            const reasoning = data.choices[0].delta.reasoning_content;
+            const content = data.choices[0].delta.content;
+
+            if (SHOW_REASONING) {
+              let combinedContent = '';
+
+              if (reasoning && !reasoningStarted) {
+                combinedContent = '<think>\n' + reasoning;
+                reasoningStarted = true;
+              } else if (reasoning) {
+                combinedContent = reasoning;
               }
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
-            } catch (e) {
-              res.write(line + '\n');
+
+              if (content && reasoningStarted) {
+                combinedContent += '</think>\n\n' + content;
+                reasoningStarted = false;
+              } else if (content) {
+                combinedContent += content;
+              }
+
+              if (combinedContent) {
+                data.choices[0].delta.content = combinedContent;
+                delete data.choices[0].delta.reasoning_content;
+              }
+            } else {
+              if (content) {
+                data.choices[0].delta.content = content;
+              } else {
+                data.choices[0].delta.content = '';
+              }
+              delete data.choices[0].delta.reasoning_content;
             }
           }
-        });
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch (e) {
+          // 🔧 FIX: previously forwarded the raw, malformed line to the client with the
+          // wrong line ending — that's what caused garbled text. Log and drop it instead.
+          console.error('Skipped unparseable stream line:', line);
+        }
+      };
+
+      response.data.on('data', (chunk) => {
+        buffer += decoder.write(chunk);
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        lines.forEach(processLine);
       });
-      
-      response.data.on('end', () => res.end());
+
+      response.data.on('end', () => {
+        buffer += decoder.end(); // flush any bytes StringDecoder was holding onto
+        if (buffer) buffer.split('\n').forEach(processLine); // 🔧 FIX: previously dropped whatever was left here
+        res.end();
+      });
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
