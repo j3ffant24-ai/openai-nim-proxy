@@ -15,6 +15,14 @@ app.use(express.json());
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
+// 🔧 FIX: safety net — an uncaught exception anywhere used to crash the whole
+// process (this is what was really causing the mystery 502s: an error in the
+// logging line below was taking the entire server down, not NVIDIA). This
+// keeps the server serving other requests even if something unexpected slips through.
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server stayed up):', err);
+});
+
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
@@ -244,10 +252,16 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
   } catch (error) {
-    // 🔧 FIX: logs which model was requested and NVIDIA's actual error detail,
-    // instead of just the generic axios message. Check your host's log tab
-    // for a line starting with "Proxy error |" to see the real cause.
-    console.error('Proxy error | model:', nimModel, '| status:', error.response?.status, '| detail:', JSON.stringify(error.response?.data));
+    // 🔧 FIX: error.response.data is a raw Node stream (not JSON) when the failed
+    // request was a streaming one — JSON.stringify on that throws a circular-structure
+    // error, which was crashing the entire server on every streaming error. Guarded now.
+    let errorDetail;
+    try {
+      errorDetail = JSON.stringify(error.response?.data);
+    } catch (stringifyError) {
+      errorDetail = '[response body was a stream, not JSON — could not log it]';
+    }
+    console.error('Proxy error | model:', nimModel, '| status:', error.response?.status, '| detail:', errorDetail);
     
     res.status(error.response?.status || 500).json({
       error: {
