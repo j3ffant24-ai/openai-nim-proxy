@@ -147,9 +147,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       // well past a natural stopping point into degenerate, garbled output.
       temperature: Math.min(temperature || 0.6, 1.2),
       max_tokens: Math.min(max_tokens || 1024, 2048), // was defaulting to 9024 — far longer than one chat turn needs
-      // 🔧 FIX: now also auto-enables for known reasoning models (see REASONING_MODELS above)
-      extra_body: (ENABLE_THINKING_MODE || REASONING_MODELS.has(nimModel)) ? { chat_template_kwargs: { thinking: true } } : undefined,
-      stream: stream || false
+      stream: stream || false,
+      // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
+      // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
+      // before sending — it isn't a real API field. Sending it literally (as earlier
+      // versions of this code did) gets rejected with a 400 once this is actually turned on.
+      ...((ENABLE_THINKING_MODE || REASONING_MODELS.has(nimModel)) ? { chat_template_kwargs: { thinking: true } } : {})
     };
     
     // Make request to NVIDIA NIM API (auto-retries on transient 503/502/504)
