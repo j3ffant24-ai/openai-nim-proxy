@@ -27,7 +27,20 @@ process.on('uncaughtException', (err) => {
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter for ALL models
+
+// 🔧 FIX: DeepSeek V4 Pro/Flash are "reasoning" models — NVIDIA's API requires
+// chat_template_kwargs.thinking to be set for them specifically, or it can return
+// malformed/garbled output instead of cleanly separating reasoning from the final
+// answer. This is very likely what caused garbled text at the end of responses.
+// Add any other reasoning-capable model here if you see the same symptom.
+const REASONING_MODELS = new Set([
+  'deepseek-ai/deepseek-v4-pro',
+  'deepseek-ai/deepseek-v4-flash',
+  'z-ai/glm-5.2', // 🔧 FIX: GLM-5.2 thinks by default on NIM — without chat_template_kwargs,
+                  // NVIDIA doesn't gate/separate that reasoning trace into reasoning_content,
+                  // so it can bleed straight into the visible answer (the garbled text you saw).
+]);
 
 // Model mapping (adjust based on available NIM models — verify against YOUR
 // account's /v1/models list first, see Step 1.4. Last verified for this account: July 2026.)
@@ -130,9 +143,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     const nimRequest = {
       model: nimModel,
       messages: messages,
-      temperature: temperature || 0.6,
-      max_tokens: max_tokens || 9024,
-      extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
+      // 🔧 FIX: clamp both — an excessive temperature or max_tokens can push generation
+      // well past a natural stopping point into degenerate, garbled output.
+      temperature: Math.min(temperature || 0.6, 1.2),
+      max_tokens: Math.min(max_tokens || 1024, 2048), // was defaulting to 9024 — far longer than one chat turn needs
+      // 🔧 FIX: now also auto-enables for known reasoning models (see REASONING_MODELS above)
+      extra_body: (ENABLE_THINKING_MODE || REASONING_MODELS.has(nimModel)) ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
     
