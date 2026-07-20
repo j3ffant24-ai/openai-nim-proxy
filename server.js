@@ -150,7 +150,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       temperature: Math.min(temperature || 0.6, 1.2),
       // Only models actually reasoning need the bigger ceiling — a model with thinking
       // forced off doesn't spend any budget on it, so it stays on the tighter, standard cap.
-      max_tokens: wantsThinking ? Math.min(max_tokens || 6144, 16384) : Math.min(max_tokens || 4096, 8192), // 🔧 FIX: thinking off ≠ wanting shorter replies — this was wrongly shrinking the visible-content budget too
+      max_tokens: wantsThinking ? Math.min(max_tokens || 61440, 163840) : Math.min(max_tokens || 40960, 81920), // 🔧 FIX: thinking off ≠ wanting shorter replies — this was wrongly shrinking the visible-content budget too
       stream: stream || false,
       // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
       // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
