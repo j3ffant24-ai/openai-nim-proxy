@@ -29,18 +29,19 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter for ALL models
 
-// 🔧 FIX: DeepSeek V4 Pro/Flash are "reasoning" models — NVIDIA's API requires
-// chat_template_kwargs.thinking to be set for them specifically, or it can return
-// malformed/garbled output instead of cleanly separating reasoning from the final
-// answer. This is very likely what caused garbled text at the end of responses.
-// Add any other reasoning-capable model here if you see the same symptom.
-const REASONING_MODELS = new Set([
-  'deepseek-ai/deepseek-v4-pro',
-  'deepseek-ai/deepseek-v4-flash',
-  'z-ai/glm-5.2', // 🔧 FIX: GLM-5.2 thinks by default on NIM — without chat_template_kwargs,
-                  // NVIDIA doesn't gate/separate that reasoning trace into reasoning_content,
-                  // so it can bleed straight into the visible answer (the garbled text you saw).
-]);
+// 🔧 Per-model override for chat_template_kwargs.thinking:
+//   true  = the model needs this to properly separate its reasoning from the final
+//           answer (it reasons either way) — reasoning still eats into max_tokens,
+//           so these get the bigger budget below. DeepSeek V4 is reasoning-native
+//           and doesn't reliably support skipping reasoning altogether.
+//   false = explicitly disables a model's default-on reasoning, freeing the whole
+//           token budget for the visible answer instead. GLM-5.2 is set this way
+//           as a test — flip it back to true if garbled text returns.
+const THINKING_OVERRIDE = {
+  'deepseek-ai/deepseek-v4-pro': true,
+  'deepseek-ai/deepseek-v4-flash': true,
+  'z-ai/glm-5.2': false,
+};
 
 // Model mapping (adjust based on available NIM models — verify against YOUR
 // account's /v1/models list first, see Step 1.4. Last verified for this account: July 2026.)
@@ -140,23 +141,22 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
     // Transform OpenAI request to NIM format
-    const isReasoningModel = ENABLE_THINKING_MODE || REASONING_MODELS.has(nimModel);
+    const hasThinkingOverride = nimModel in THINKING_OVERRIDE;
+    const wantsThinking = hasThinkingOverride ? THINKING_OVERRIDE[nimModel] : ENABLE_THINKING_MODE;
     const nimRequest = {
       model: nimModel,
       messages: messages,
       // 🔧 FIX: clamp — an excessive temperature can push generation into degenerate output.
       temperature: Math.min(temperature || 0.6, 1.2),
-      // 🔧 FIX: reasoning models spend part of this budget on an internal thinking phase
-      // BEFORE producing any visible content — a cap too low can exhaust the whole budget
-      // on reasoning alone, leaving zero tokens for the actual answer ("No valid content
-      // was generated" = reasoning happened, the answer never did). They get more headroom.
-      max_tokens: isReasoningModel ? Math.min(max_tokens || 40960, 81920) : Math.min(max_tokens || 1024, 2048),
+      // Only models actually reasoning need the bigger ceiling — a model with thinking
+      // forced off doesn't spend any budget on it, so it stays on the tighter, standard cap.
+      max_tokens: wantsThinking ? Math.min(max_tokens || 6144, 16384) : Math.min(max_tokens || 1024, 2048),
       stream: stream || false,
       // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
       // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
-      // before sending — it isn't a real API field. Sending it literally (as earlier
-      // versions of this code did) gets rejected with a 400 once this is actually turned on.
-      ...(isReasoningModel ? { chat_template_kwargs: { thinking: true } } : {})
+      // before sending — it isn't a real API field, and sending it literally gets rejected
+      // with a 400. Only sent at all when a model has an override or the global toggle is on.
+      ...(hasThinkingOverride || ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: wantsThinking } } : {})
     };
     
     // Make request to NVIDIA NIM API (auto-retries on transient 503/502/504)
