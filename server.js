@@ -150,7 +150,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       // BEFORE producing any visible content — a cap too low can exhaust the whole budget
       // on reasoning alone, leaving zero tokens for the actual answer ("No valid content
       // was generated" = reasoning happened, the answer never did). They get more headroom.
-      max_tokens: isReasoningModel ? Math.min(max_tokens || 4096, 8192) : Math.min(max_tokens || 1024, 2048),
+      max_tokens: isReasoningModel ? Math.min(max_tokens || 40960, 81920) : Math.min(max_tokens || 1024, 2048),
       stream: stream || false,
       // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
       // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
