@@ -95,9 +95,13 @@ async function callNimWithRetry(nimRequest, maxRetries = 2) {
       });
     } catch (error) {
       const status = error.response?.status;
-      const isRetryable = status === 503 || status === 502 || status === 504;
+      const isRetryable = status === 503 || status === 502 || status === 504 || status === 429; // 🔧 FIX: 429 (rate limit) was missing entirely — never retried before
       if (!isRetryable || attempt === maxRetries) throw error;
-      const waitMs = 1000 * Math.pow(2, attempt); // 1s, then 2s, then 4s
+      // 🔧 FIX: 429 usually comes with a Retry-After header telling us exactly how long
+      // to wait — use that instead of guessing with the same backoff as server errors.
+      const retryAfterHeader = error.response?.headers?.['retry-after'];
+      const retryAfterMs = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : null;
+      const waitMs = Math.min(retryAfterMs || 1000 * Math.pow(2, attempt), 15000); // capped so a long Retry-After can't itself cause a platform timeout
       console.log(`NVIDIA returned ${status}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
       await new Promise(r => setTimeout(r, waitMs));
     }
@@ -150,7 +154,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       temperature: Math.min(temperature || 0.6, 1.2),
       // Only models actually reasoning need the bigger ceiling — a model with thinking
       // forced off doesn't spend any budget on it, so it stays on the tighter, standard cap.
-      max_tokens: wantsThinking ? Math.min(max_tokens || 61440, 163840) : Math.min(max_tokens || 40960, 81920), // 🔧 FIX: thinking off ≠ wanting shorter replies — this was wrongly shrinking the visible-content budget too
+      max_tokens: wantsThinking ? Math.min(max_tokens || 6144, 16384) : Math.min(max_tokens || 2048, 4096), // 🔧 FIX: thinking off ≠ wanting shorter replies — this was wrongly shrinking the visible-content budget too
       stream: stream || false,
       // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
       // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
