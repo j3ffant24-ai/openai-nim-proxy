@@ -2,57 +2,34 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { StringDecoder } = require('string_decoder'); // correctly handles multi-byte UTF-8 chars split across chunks
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
 
 // NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
-// 🔧 FIX: safety net — an uncaught exception anywhere used to crash the whole
-// process (this is what was really causing the mystery 502s: an error in the
-// logging line below was taking the entire server down, not NVIDIA). This
-// keeps the server serving other requests even if something unexpected slips through.
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception (server stayed up):', err);
-});
-
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter for ALL models
+const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
 
-// 🔧 Per-model override for chat_template_kwargs.thinking:
-//   true  = the model needs this to properly separate its reasoning from the final
-//           answer (it reasons either way) — reasoning still eats into max_tokens,
-//           so these get the bigger budget below. DeepSeek V4 is reasoning-native
-//           and doesn't reliably support skipping reasoning altogether.
-//   false = explicitly disables a model's default-on reasoning, freeing the whole
-//           token budget for the visible answer instead. GLM-5.2 is set this way
-//           as a test — flip it back to true if garbled text returns.
-const THINKING_OVERRIDE = {
-  'deepseek-ai/deepseek-v4-pro': true,
-  'deepseek-ai/deepseek-v4-flash': true,
-  'z-ai/glm-5.2': false,
-};
-
-// Model mapping (adjust based on available NIM models — verify against YOUR
-// account's /v1/models list first, see Step 1.4. Last verified for this account: July 2026.)
+// Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  'gpt-4': 'z-ai/glm-5.2',
-  'gpt-4-turbo': 'deepseek-ai/deepseek-v4-flash', // was kimi-k2.6 — access-gated for this account, see Troubleshooting
-  'gpt-4o': 'deepseek-ai/deepseek-v4-pro',
+  'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
+  'gpt-4-turbo': 'moonshotai/kimi-k2.6',
+  'gpt-4o': 'deepseek-ai/deepseek-v3.1',
   'claude-3-opus': 'openai/gpt-oss-120b',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
-  'gemini-pro': 'qwen/qwen3-next-80b-a3b-instruct' 
+  'gemini-pro': 'deepseek-ai/deepseek-v4-pro',
+  'minimax': 'minimaxai/minimax-m2.7'
 };
 
 // Health check endpoint
@@ -80,42 +57,24 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// Calls NVIDIA with automatic retry on temporary server errors (503/502/504) —
-// free-tier model endpoints occasionally return these under load, and they
-// usually succeed on a quick retry rather than needing the user to resend.
-async function callNimWithRetry(nimRequest, maxRetries = 2) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-        headers: {
-          'Authorization': `Bearer ${NIM_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        responseType: nimRequest.stream ? 'stream' : 'json'
-      });
-    } catch (error) {
-      const status = error.response?.status;
-      const isRetryable = status === 503 || status === 502 || status === 504 || status === 429; // 🔧 FIX: 429 (rate limit) was missing entirely — never retried before
-      if (!isRetryable || attempt === maxRetries) throw error;
-      // 🔧 FIX: 429 usually comes with a Retry-After header telling us exactly how long
-      // to wait — use that instead of guessing with the same backoff as server errors.
-      const retryAfterHeader = error.response?.headers?.['retry-after'];
-      const retryAfterMs = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : null;
-      const waitMs = Math.min(retryAfterMs || 1000 * Math.pow(2, attempt), 15000); // capped so a long Retry-After can't itself cause a platform timeout
-      console.log(`NVIDIA returned ${status}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
-      await new Promise(r => setTimeout(r, waitMs));
-    }
-  }
-}
+// Models endpoint — required by WyvernChat and most OpenAI-compatible frontends
+app.get('/v1/models', (req, res) => {
+  const models = Object.keys(MODEL_MAPPING).map(id => ({
+    id,
+    object: 'model',
+    created: 1700000000,
+    owned_by: 'nvidia-nim-proxy'
+  }));
+  res.json({ object: 'list', data: models });
+});
 
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
-  let nimModel; // declared here so it's visible in the catch block below
   try {
-    const { model, messages, temperature, max_tokens, stream } = req.body;
+    const { model, messages, temperature, max_tokens, stream, frequency_penalty, presence_penalty, top_p, repetition_penalty } = req.body;
     
     // Smart model selection with fallback
-    nimModel = MODEL_MAPPING[model];
+    let nimModel = MODEL_MAPPING[model];
     if (!nimModel) {
       try {
         await axios.post(`${NIM_API_BASE}/chat/completions`, {
@@ -144,151 +103,133 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // Force streaming always — keeps Render connection alive, prevents 504
+    const useStream = true;
+
     // Transform OpenAI request to NIM format
-    const hasThinkingOverride = nimModel in THINKING_OVERRIDE;
-    const wantsThinking = hasThinkingOverride ? THINKING_OVERRIDE[nimModel] : ENABLE_THINKING_MODE;
     const nimRequest = {
       model: nimModel,
       messages: messages,
-      // 🔧 FIX: clamp — an excessive temperature can push generation into degenerate output.
-      temperature: Math.min(temperature || 0.6, 1.2),
-      // Only models actually reasoning need the bigger ceiling — a model with thinking
-      // forced off doesn't spend any budget on it, so it stays on the tighter, standard cap.
-      max_tokens: wantsThinking ? Math.min(max_tokens || 61440, 163840) : Math.min(max_tokens || 20480, 40960), // 🔧 FIX: thinking off ≠ wanting shorter replies — this was wrongly shrinking the visible-content budget too
-      stream: stream || false,
-      // 🔧 FIX: chat_template_kwargs must be a TOP-LEVEL field in the JSON body NVIDIA
-      // receives. "extra_body" is a Python SDK convenience keyword that the SDK flattens
-      // before sending — it isn't a real API field, and sending it literally gets rejected
-      // with a 400. Only sent at all when a model has an override or the global toggle is on.
-      ...(hasThinkingOverride || ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: wantsThinking } } : {})
+      temperature: temperature || 0.6,
+      max_tokens: max_tokens || 9024,
+      // Anti-repetition params — prevents echoing the greeting/first message
+      frequency_penalty: frequency_penalty ?? 0.4,
+      presence_penalty: presence_penalty ?? 0.4,
+      top_p: top_p ?? 0.9,
+      extra_body: {
+        ...(repetition_penalty ? { repetition_penalty } : {}),
+        ...(ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : {})
+      },
+      stream: useStream
     };
     
-    // Make request to NVIDIA NIM API (auto-retries on transient 503/502/504)
-    const response = await callNimWithRetry(nimRequest);
+    // Retry helper with exponential backoff for 429s
+    const nimFetch = async (retries = 6, delay = 3000) => {
+      for (let i = 0; i <= retries; i++) {
+        try {
+          return await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+            headers: {
+              'Authorization': `Bearer ${NIM_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            responseType: 'stream',
+            timeout: 0 // no timeout — streaming keeps Render alive
+          });
+        } catch (err) {
+          const status = err.response?.status;
+          if ((status === 429 || status === 504) && i < retries) {
+            const retryAfter = parseInt(err.response?.headers?.['retry-after'] || 0) * 1000;
+            const wait = retryAfter || delay * Math.pow(2, i);
+            console.warn(`${status} error. Retrying in ${wait}ms... (attempt ${i + 1}/${retries})`);
+            await new Promise(r => setTimeout(r, wait));
+          } else {
+            throw err;
+          }
+        }
+      }
+    };
+
+    // Make request to NVIDIA NIM API
+    const response = await nimFetch();
     
     if (stream) {
-      // Handle streaming response with reasoning
+      // Pass stream directly to client
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      
+
       let buffer = '';
       let reasoningStarted = false;
-      const decoder = new StringDecoder('utf8'); // 🔧 FIX: buffers partial multi-byte chars across chunk boundaries instead of corrupting them
-
-      // 🔧 FIX: extracted so the leftover buffer can be flushed on 'end' too, instead of being silently dropped
-      const processLine = (line) => {
-        if (!line.startsWith('data: ')) return;
-
-        if (line.includes('[DONE]')) {
-          res.write('data: [DONE]\n\n'); // 🔧 FIX: was missing the trailing blank line every SSE event needs
-          return;
-        }
-
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.choices?.[0]?.delta) {
-            const reasoning = data.choices[0].delta.reasoning_content;
-            const content = data.choices[0].delta.content;
-
-            if (SHOW_REASONING) {
-              let combinedContent = '';
-
-              if (reasoning && !reasoningStarted) {
-                combinedContent = '<think>\n' + reasoning;
-                reasoningStarted = true;
-              } else if (reasoning) {
-                combinedContent = reasoning;
-              }
-
-              if (content && reasoningStarted) {
-                combinedContent += '</think>\n\n' + content;
-                reasoningStarted = false;
-              } else if (content) {
-                combinedContent += content;
-              }
-
-              if (combinedContent) {
-                data.choices[0].delta.content = combinedContent;
-                delete data.choices[0].delta.reasoning_content;
-              }
-            } else {
-              if (content) {
-                data.choices[0].delta.content = content;
-              } else {
-                data.choices[0].delta.content = '';
-              }
-              delete data.choices[0].delta.reasoning_content;
-            }
-          }
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
-        } catch (e) {
-          // 🔧 FIX: previously forwarded the raw, malformed line to the client with the
-          // wrong line ending — that's what caused garbled text. Log and drop it instead.
-          console.error('Skipped unparseable stream line:', line);
-        }
-      };
 
       response.data.on('data', (chunk) => {
-        buffer += decoder.write(chunk);
+        buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-        lines.forEach(processLine);
+
+        lines.forEach(line => {
+          if (line.startsWith('data: ')) {
+            if (line.includes('[DONE]')) { res.write(line + '\n'); return; }
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.choices?.[0]?.delta) {
+                const reasoning = data.choices[0].delta.reasoning_content;
+                const content = data.choices[0].delta.content;
+                if (SHOW_REASONING) {
+                  let combined = '';
+                  if (reasoning && !reasoningStarted) { combined = '<think>\n' + reasoning; reasoningStarted = true; }
+                  else if (reasoning) { combined = reasoning; }
+                  if (content && reasoningStarted) { combined += '</think>\n\n' + content; reasoningStarted = false; }
+                  else if (content) { combined += content; }
+                  if (combined) { data.choices[0].delta.content = combined; delete data.choices[0].delta.reasoning_content; }
+                } else {
+                  data.choices[0].delta.content = content || '';
+                  delete data.choices[0].delta.reasoning_content;
+                }
+              }
+              res.write(`data: ${JSON.stringify(data)}\n\n`);
+            } catch (e) { res.write(line + '\n'); }
+          }
+        });
+      });
+      response.data.on('end', () => res.end());
+      response.data.on('error', (err) => { console.error('Stream error:', err); res.end(); });
+
+    } else {
+      // Client wants JSON — collect the stream and assemble it
+      let buffer = '', fullContent = '', fullReasoning = '', finishReason = '', promptTokens = 0, completionTokens = 0;
+
+      await new Promise((resolve, reject) => {
+        response.data.on('data', (chunk) => { buffer += chunk.toString(); });
+        response.data.on('end', () => {
+          buffer.split('\n').forEach(line => {
+            if (!line.startsWith('data: ') || line.includes('[DONE]')) return;
+            try {
+              const data = JSON.parse(line.slice(6));
+              fullContent   += data.choices?.[0]?.delta?.content           || '';
+              fullReasoning += data.choices?.[0]?.delta?.reasoning_content || '';
+              if (data.choices?.[0]?.finish_reason) finishReason = data.choices[0].finish_reason;
+              if (data.usage) { promptTokens = data.usage.prompt_tokens || 0; completionTokens = data.usage.completion_tokens || 0; }
+            } catch (e) {}
+          });
+          resolve();
+        });
+        response.data.on('error', reject);
       });
 
-      response.data.on('end', () => {
-        buffer += decoder.end(); // flush any bytes StringDecoder was holding onto
-        if (buffer) buffer.split('\n').forEach(processLine); // 🔧 FIX: previously dropped whatever was left here
-        res.end();
-      });
-      response.data.on('error', (err) => {
-        console.error('Stream error:', err);
-        res.end();
-      });
-    } else {
-      // Transform NIM response to OpenAI format with reasoning
-      const openaiResponse = {
+      if (SHOW_REASONING && fullReasoning) fullContent = '<think>\n' + fullReasoning + '\n</think>\n\n' + fullContent;
+
+      res.json({
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: response.data.choices.map(choice => {
-          let fullContent = choice.message?.content || '';
-          
-          if (SHOW_REASONING && choice.message?.reasoning_content) {
-            fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
-          }
-          
-          return {
-            index: choice.index,
-            message: {
-              role: choice.message.role,
-              content: fullContent
-            },
-            finish_reason: choice.finish_reason
-          };
-        }),
-        usage: response.data.usage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
-        }
-      };
-      
-      res.json(openaiResponse);
+        model,
+        choices: [{ index: 0, message: { role: 'assistant', content: fullContent }, finish_reason: finishReason }],
+        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens }
+      });
     }
     
   } catch (error) {
-    // 🔧 FIX: error.response.data is a raw Node stream (not JSON) when the failed
-    // request was a streaming one — JSON.stringify on that throws a circular-structure
-    // error, which was crashing the entire server on every streaming error. Guarded now.
-    let errorDetail;
-    try {
-      errorDetail = JSON.stringify(error.response?.data);
-    } catch (stringifyError) {
-      errorDetail = '[response body was a stream, not JSON — could not log it]';
-    }
-    console.error('Proxy error | model:', nimModel, '| status:', error.response?.status, '| detail:', errorDetail);
+    console.error('Proxy error:', error.message);
     
     res.status(error.response?.status || 500).json({
       error: {
