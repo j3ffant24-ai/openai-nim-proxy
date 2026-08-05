@@ -23,7 +23,7 @@ const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwarg
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  'gpt-4': 'z-ai/glm-5.2',
+  'gpt-4': 'deepseek-ai/deepseek-r1',
   'gpt-4-turbo': 'moonshotai/kimi-k2.6',
   'gpt-4o': 'deepseek-ai/deepseek-v3.1',
   'claude-3-opus': 'openai/gpt-oss-120b',
@@ -206,8 +206,8 @@ app.post('/v1/chat/completions', async (req, res) => {
               tokenCount += (data.choices?.[0]?.delta?.content || '').length / 4;
               if (tokenCount > MAX_STREAM_TOKENS) {
                 streamDone = true;
-                res.write('data: [DONE]\n\n');
-                res.end();
+                if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+                response.data.destroy(); // stop NIM from sending more
               }
             } catch (e) { res.write(line + '\n'); }
           }
@@ -252,14 +252,18 @@ app.post('/v1/chat/completions', async (req, res) => {
     
   } catch (error) {
     console.error('Proxy error:', error.message);
-    
-    res.status(error.response?.status || 500).json({
-      error: {
-        message: error.message || 'Internal server error',
-        type: 'invalid_request_error',
-        code: error.response?.status || 500
-      }
-    });
+    if (res.headersSent) {
+      // Stream already started — just close it cleanly
+      if (!res.writableEnded) res.end();
+    } else {
+      res.status(error.response?.status || 500).json({
+        error: {
+          message: error.message || 'Internal server error',
+          type: 'invalid_request_error',
+          code: error.response?.status || 500
+        }
+      });
+    }
   }
 });
 
