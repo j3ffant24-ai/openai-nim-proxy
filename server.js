@@ -122,8 +122,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: nimModel,
       messages: trimMessages(messages),
       temperature: temperature || 0.6,
-      max_tokens: max_tokens || 2048, // lower default prevents runaway
-      stop: ['[OOC', '---', '<|end|>', '<|eot_id|>', '[END]', '\n\n\n\n'], // halt runaway loops
+      max_tokens: max_tokens || 2048,
       stream: useStream
     };
 
@@ -175,6 +174,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       let reasoningStarted = false;
       let tokenCount = 0;
       const MAX_STREAM_TOKENS = 2500;
+      let streamDone = false;
 
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -201,9 +201,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                   delete data.choices[0].delta.reasoning_content;
                 }
               }
+              if (streamDone) return;
               res.write(`data: ${JSON.stringify(data)}\n\n`);
               tokenCount += (data.choices?.[0]?.delta?.content || '').length / 4;
               if (tokenCount > MAX_STREAM_TOKENS) {
+                streamDone = true;
                 res.write('data: [DONE]\n\n');
                 res.end();
               }
