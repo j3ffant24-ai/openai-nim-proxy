@@ -117,22 +117,23 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Force streaming always — keeps Render connection alive, prevents 504
     const useStream = true;
 
-    // Transform OpenAI request to NIM format
+    // Build NIM request — only include optional params if actually set
     const nimRequest = {
       model: nimModel,
       messages: trimMessages(messages),
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
-      // Anti-repetition params — prevents echoing the greeting/first message
-      frequency_penalty: frequency_penalty ?? 0.4,
-      presence_penalty: presence_penalty ?? 0.4,
-      top_p: top_p ?? 0.9,
-      extra_body: {
-        ...(repetition_penalty ? { repetition_penalty } : {}),
-        ...(ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : {})
-      },
       stream: useStream
     };
+
+    // Only add penalty params if the client sent them (avoids 400 on strict models)
+    if (frequency_penalty != null) nimRequest.frequency_penalty = frequency_penalty;
+    if (presence_penalty  != null) nimRequest.presence_penalty  = presence_penalty;
+    if (top_p             != null) nimRequest.top_p             = top_p;
+    if (repetition_penalty != null) nimRequest.repetition_penalty = repetition_penalty;
+
+    // Only add extra_body if thinking mode is actually on
+    if (ENABLE_THINKING_MODE) nimRequest.extra_body = { chat_template_kwargs: { thinking: true } };
     
     // Retry helper with exponential backoff for 429s
     const nimFetch = async (retries = 6, delay = 3000) => {
