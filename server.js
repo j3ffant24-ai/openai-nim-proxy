@@ -22,14 +22,14 @@ const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwarg
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'nvidia/nemotron-3-super-120b-a12b',
-  'gpt-4':         'deepseek-ai/deepseek-v4-flash',
-  'gpt-4-turbo':   'moonshotai/kimi-k2.6',
-  'gpt-4o':        'deepseek-ai/deepseek-v4-pro',
-  'claude-3-opus': 'openai/gpt-oss-120b',
+  'gpt-3.5-turbo':'nvidia/nemotron-3-super-120b-a12b',
+  'gpt-4':'deepseek-ai/deepseek-v4-flash',
+  'gpt-4-turbo':'moonshotai/kimi-k2.6',
+  'gpt-4o':'deepseek-ai/deepseek-v4-pro',
+  'claude-3-opus':'openai/gpt-oss-120b',
   'claude-3-sonnet':'openai/gpt-oss-20b',
-  'gemini-pro':    'nvidia/nemotron-3-ultra-550b-a55b',
-  'minimax':       'minimaxai/minimax-m2.7'
+  'gemini-pro':'nvidia/nemotron-3-ultra-550b-a55b',
+  'minimax':'minimaxai/minimax-m2.7'
 };
 
 // Trim old messages to avoid NIM 413 — keeps system prompt + recent history
