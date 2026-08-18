@@ -104,12 +104,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       
       if (!nimModel) {
         const modelLower = model.toLowerCase();
-        if (modelLower.includes('gpt-4') || modelLower.includes('claude-opus') || modelLower.includes('405b')) {
-          nimModel = 'meta/llama-3.1-405b-instruct';
-        } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
-          nimModel = 'meta/llama-3.1-70b-instruct';
+        if (modelLower.includes('gpt-4') || modelLower.includes('claude-opus') || modelLower.includes('405b') || modelLower.includes('large')) {
+          nimModel = 'nvidia/nemotron-3-ultra-550b-a55b';
+        } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b') || modelLower.includes('medium')) {
+          nimModel = 'deepseek-ai/deepseek-v4-flash';
         } else {
-          nimModel = 'meta/llama-3.1-8b-instruct';
+          nimModel = 'nvidia/nemotron-3-super-120b-a12b';
         }
       }
     }
