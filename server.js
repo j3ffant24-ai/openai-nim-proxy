@@ -43,6 +43,29 @@ const trimMessages = (messages, maxTokens = 24000) => {
   return [...system, ...rest];
 };
 
+// Test all mapped models — visit /test-models to see which ones work with your key
+app.get('/test-models', async (req, res) => {
+  const results = {};
+  for (const [alias, nimModel] of Object.entries(MODEL_MAPPING)) {
+    try {
+      const r = await axios.post(`${NIM_API_BASE}/chat/completions`, {
+        model: nimModel,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+        stream: false
+      }, {
+        headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 15000,
+        validateStatus: () => true
+      });
+      results[alias] = { nim_model: nimModel, status: r.status, ok: r.status < 400 };
+    } catch (err) {
+      results[alias] = { nim_model: nimModel, status: 'timeout', ok: false };
+    }
+  }
+  res.json(results);
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
