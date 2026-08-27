@@ -19,18 +19,18 @@ const SHOW_REASONING = false; // Set to true to show <think> tags in output
 
 // Model mapping — Groq model strings
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'llama-3.1-8b-instant',
-  'gpt-4':         'llama-3.3-70b-versatile',
+  'gpt-3.5-turbo': 'openai/gpt-oss-20b',
+  'gpt-4':         'openai/gpt-oss-120b',
   'gpt-4-turbo':   'deepseek-r1-distill-llama-70b',
-  'gpt-4o':        'openai/gpt-oss-120b',
-  'claude-3-opus': 'llama-3.3-70b-versatile',
-  'claude-3-sonnet':'qwen-qwq-32b',
-  'gemini-pro':    'llama-4-scout-17b-16e-instruct',
-  'minimax':       'llama-3.3-70b-versatile'
+  'gpt-4o':        'qwen/qwen3.6-27b',
+  'claude-3-opus': 'openai/gpt-oss-120b',
+  'claude-3-sonnet':'openai/gpt-oss-20b',
+  'gemini-pro':    'minimaxai/minimax-m2.7',
+  'minimax':       'moonshotai/kimi-k2-instruct'
 };
 
 // Trim old messages to avoid payload too large errors
-const trimMessages = (messages, maxTokens = 24000) => {
+const trimMessages = (messages, maxTokens = 6000) => {
   const estimate = msgs => msgs.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 4), 0);
   if (estimate(messages) <= maxTokens) return messages;
   const system = messages.filter(m => m.role === 'system');
