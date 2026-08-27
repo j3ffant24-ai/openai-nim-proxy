@@ -30,7 +30,7 @@ const MODEL_MAPPING = {
 };
 
 // Trim old messages to avoid payload too large errors
-const trimMessages = (messages, maxTokens = 6000) => {
+const trimMessages = (messages, maxTokens = 3000) => {
   const estimate = msgs => msgs.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 4), 0);
   if (estimate(messages) <= maxTokens) return messages;
   const system = messages.filter(m => m.role === 'system');
@@ -110,7 +110,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: groqModel,
       messages: trimMessages(messages),
       temperature: temperature || 0.6,
-      max_tokens: max_tokens || 2048,
+      max_tokens: max_tokens || 1500,
       stream: useStream
     };
 
