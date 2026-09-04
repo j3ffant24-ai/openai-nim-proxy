@@ -75,6 +75,16 @@ app.get('/v1/models', (req, res) => {
   res.json({ object: 'list', data: models });
 });
 
+// Individual model lookup — some frontends call GET /v1/models/:id to verify
+app.get('/v1/models/:modelId', (req, res) => {
+  res.json({
+    id: req.params.modelId,
+    object: 'model',
+    created: 1700000000,
+    owned_by: 'gemini-proxy'
+  });
+});
+
 // Chat completions — main proxy
 app.post('/v1/chat/completions', async (req, res) => {
   try {
