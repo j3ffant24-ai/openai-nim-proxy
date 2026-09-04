@@ -93,7 +93,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Force streaming to keep Render connection alive
     const useStream = true;
 
-    // Build request
+    // Build request — strip unsupported Gemini params
     const geminiRequest = {
       model: geminiModel,
       messages: trimMessages(messages),
@@ -102,9 +102,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: useStream
     };
 
-    if (frequency_penalty != null) geminiRequest.frequency_penalty = frequency_penalty;
-    if (presence_penalty  != null) geminiRequest.presence_penalty  = presence_penalty;
-    if (top_p             != null) geminiRequest.top_p             = top_p;
+    // Only forward top_p — Gemini rejects frequency/presence_penalty
+    if (top_p != null) geminiRequest.top_p = top_p;
 
     // Retry with exponential backoff for 429 and 503
     const geminiFetch = async (retries = 6, delay = 3000) => {
