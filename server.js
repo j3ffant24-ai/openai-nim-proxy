@@ -21,7 +21,7 @@ const MODEL_MAPPING = {
   'gpt-4o':        'gemini-2.5-flash',
   'claude-3-opus': 'gemini-2.5-flash',
   'claude-3-sonnet':'gemini-2.5-flash-lite',
-  'gemini-pro':    'gemini-2.5-flash',
+  'gemini-pro':    'gemini-3.8-flash',
   'minimax':       'gemini-2.5-flash-lite'
 };
 
