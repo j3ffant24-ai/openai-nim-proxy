@@ -1,4 +1,4 @@
-// server.js - OpenAI to Groq API Proxy
+// server.js - OpenAI to Google Gemini API Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -6,31 +6,27 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Groq API configuration
-const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// Gemini API configuration
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// 🔥 REASONING DISPLAY TOGGLE
-const SHOW_REASONING = false; // Set to true to show <think> tags in output
-
-// Model mapping — Groq model strings
+// Model mapping — Gemini model strings
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'openai/gpt-oss-20b',
-  'gpt-4':         'openai/gpt-oss-120b',
-  'gpt-4-turbo':   'deepseek-r1-distill-llama-70b',
-  'gpt-4o':        'qwen/qwen3.6-27b',
-  'claude-3-opus': 'openai/gpt-oss-120b',
-  'claude-3-sonnet':'openai/gpt-oss-20b',
-  'gemini-pro':    'minimaxai/minimax-m2.7',
-  'minimax':       'moonshotai/kimi-k2-instruct'
+  'gpt-3.5-turbo': 'gemini-2.5-flash-lite',
+  'gpt-4':         'gemini-2.5-flash',
+  'gpt-4-turbo':   'gemini-2.5-flash',
+  'gpt-4o':        'gemini-2.5-flash',
+  'claude-3-opus': 'gemini-2.5-flash',
+  'claude-3-sonnet':'gemini-2.5-flash-lite',
+  'gemini-pro':    'gemini-2.5-flash',
+  'minimax':       'gemini-2.5-flash-lite'
 };
 
-// Trim old messages to avoid payload too large errors
-const trimMessages = (messages, maxTokens = 3000) => {
+// Trim old messages — Gemini has 1M context so limit is generous
+const trimMessages = (messages, maxTokens = 16000) => {
   const estimate = msgs => msgs.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 4), 0);
   if (estimate(messages) <= maxTokens) return messages;
   const system = messages.filter(m => m.role === 'system');
@@ -40,91 +36,83 @@ const trimMessages = (messages, maxTokens = 3000) => {
   return [...system, ...rest];
 };
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'OpenAI to Groq Proxy',
-    reasoning_display: SHOW_REASONING
-  });
+  res.json({ status: 'ok', service: 'OpenAI to Gemini Proxy' });
 });
 
 // Test all mapped models — visit /test-models to see which ones work
 app.get('/test-models', async (req, res) => {
   const results = {};
-  for (const [alias, groqModel] of Object.entries(MODEL_MAPPING)) {
+  for (const [alias, geminiModel] of Object.entries(MODEL_MAPPING)) {
     try {
-      const r = await axios.post(`${GROQ_API_BASE}/chat/completions`, {
-        model: groqModel,
+      const r = await axios.post(`${GEMINI_API_BASE}/chat/completions`, {
+        model: geminiModel,
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 1,
         stream: false
       }, {
-        headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${GEMINI_API_KEY}`, 'Content-Type': 'application/json' },
         timeout: 15000,
         validateStatus: () => true
       });
-      results[alias] = { groq_model: groqModel, status: r.status, ok: r.status < 400 };
+      results[alias] = { gemini_model: geminiModel, status: r.status, ok: r.status < 400 };
     } catch (err) {
-      results[alias] = { groq_model: groqModel, status: 'timeout', ok: false };
+      results[alias] = { gemini_model: geminiModel, status: 'timeout', ok: false };
     }
   }
   res.json(results);
 });
 
-// Models list endpoint (required by WyvernChat and most frontends)
+// Models list — required by WyvernChat and most frontends
 app.get('/v1/models', (req, res) => {
   const models = Object.keys(MODEL_MAPPING).map(id => ({
     id,
     object: 'model',
     created: 1700000000,
-    owned_by: 'groq-proxy'
+    owned_by: 'gemini-proxy'
   }));
   res.json({ object: 'list', data: models });
 });
 
-// Chat completions endpoint (main proxy)
+// Chat completions — main proxy
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream,
-            frequency_penalty, presence_penalty, top_p, repetition_penalty } = req.body;
+            frequency_penalty, presence_penalty, top_p } = req.body;
 
     // Model selection with fallback
-    let groqModel = MODEL_MAPPING[model];
-    if (!groqModel) {
+    let geminiModel = MODEL_MAPPING[model];
+    if (!geminiModel) {
       const m = model.toLowerCase();
-      if (m.includes('gpt-4') || m.includes('claude-opus') || m.includes('large')) {
-        groqModel = 'llama-3.3-70b-versatile';
-      } else if (m.includes('claude') || m.includes('gemini') || m.includes('medium')) {
-        groqModel = 'llama-3.3-70b-versatile';
-      } else {
-        groqModel = 'llama-3.1-8b-instant';
-      }
+      geminiModel = (m.includes('gpt-4') || m.includes('large') || m.includes('opus'))
+        ? 'gemini-2.5-flash'
+        : 'gemini-2.5-flash-lite';
     }
 
-    // Force streaming to prevent 504 timeouts
+    // Force streaming to keep Render connection alive
     const useStream = true;
 
-    // Build request — only include optional params if sent
-    const groqRequest = {
-      model: groqModel,
+    // Build request
+    const geminiRequest = {
+      model: geminiModel,
       messages: trimMessages(messages),
-      temperature: temperature || 0.6,
-      max_tokens: max_tokens || 1500,
+      temperature: temperature || 0.7,
+      max_tokens: max_tokens || 2048,
       stream: useStream
     };
 
-    if (frequency_penalty != null) groqRequest.frequency_penalty = frequency_penalty;
-    if (presence_penalty  != null) groqRequest.presence_penalty  = presence_penalty;
-    if (top_p             != null) groqRequest.top_p             = top_p;
+    if (frequency_penalty != null) geminiRequest.frequency_penalty = frequency_penalty;
+    if (presence_penalty  != null) geminiRequest.presence_penalty  = presence_penalty;
+    if (top_p             != null) geminiRequest.top_p             = top_p;
 
-    // Retry helper with exponential backoff for 429s and 504s
-    const groqFetch = async (retries = 6, delay = 3000) => {
+    // Retry with exponential backoff for 429 and 503
+    const geminiFetch = async (retries = 6, delay = 3000) => {
       for (let i = 0; i <= retries; i++) {
         try {
-          return await axios.post(`${GROQ_API_BASE}/chat/completions`, groqRequest, {
+          return await axios.post(`${GEMINI_API_BASE}/chat/completions`, geminiRequest, {
             headers: {
-              'Authorization': `Bearer ${GROQ_API_KEY}`,
+              'Authorization': `Bearer ${GEMINI_API_KEY}`,
               'Content-Type': 'application/json'
             },
             responseType: 'stream',
@@ -132,7 +120,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           });
         } catch (err) {
           const status = err.response?.status;
-          if ((status === 429 || status === 504) && i < retries) {
+          if ((status === 429 || status === 503) && i < retries) {
             const retryAfter = parseInt(err.response?.headers?.['retry-after'] || 0) * 1000;
             const wait = retryAfter || delay * Math.pow(2, i);
             console.warn(`${status} error. Retrying in ${wait}ms... (attempt ${i + 1}/${retries})`);
@@ -144,15 +132,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     };
 
-    const response = await groqFetch();
+    const response = await geminiFetch();
 
     if (stream) {
-      // Pass stream directly to client
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      let buffer = '', reasoningStarted = false, tokenCount = 0, streamDone = false;
+      let buffer = '', tokenCount = 0, streamDone = false;
       const MAX_STREAM_TOKENS = 2500;
 
       response.data.on('data', (chunk) => {
@@ -165,21 +152,6 @@ app.post('/v1/chat/completions', async (req, res) => {
           if (line.includes('[DONE]')) { res.write(line + '\n'); return; }
           try {
             const data = JSON.parse(line.slice(6));
-            if (data.choices?.[0]?.delta) {
-              const reasoning = data.choices[0].delta.reasoning_content;
-              const content   = data.choices[0].delta.content;
-              if (SHOW_REASONING) {
-                let combined = '';
-                if (reasoning && !reasoningStarted) { combined = '<think>\n' + reasoning; reasoningStarted = true; }
-                else if (reasoning) { combined = reasoning; }
-                if (content && reasoningStarted) { combined += '</think>\n\n' + content; reasoningStarted = false; }
-                else if (content) { combined += content; }
-                if (combined) { data.choices[0].delta.content = combined; delete data.choices[0].delta.reasoning_content; }
-              } else {
-                data.choices[0].delta.content = content || '';
-                delete data.choices[0].delta.reasoning_content;
-              }
-            }
             if (streamDone) return;
             res.write(`data: ${JSON.stringify(data)}\n\n`);
             tokenCount += (data.choices?.[0]?.delta?.content || '').length / 4;
@@ -196,8 +168,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       response.data.on('error', (err) => { console.error('Stream error:', err); if (!res.writableEnded) res.end(); });
 
     } else {
-      // Collect stream and return as JSON for non-streaming clients
-      let buffer = '', fullContent = '', fullReasoning = '', finishReason = '', promptTokens = 0, completionTokens = 0;
+      // Collect stream and return as JSON
+      let buffer = '', fullContent = '', finishReason = '';
 
       await new Promise((resolve, reject) => {
         response.data.on('data', (chunk) => { buffer += chunk.toString(); });
@@ -206,10 +178,8 @@ app.post('/v1/chat/completions', async (req, res) => {
             if (!line.startsWith('data: ') || line.includes('[DONE]')) return;
             try {
               const data = JSON.parse(line.slice(6));
-              fullContent   += data.choices?.[0]?.delta?.content           || '';
-              fullReasoning += data.choices?.[0]?.delta?.reasoning_content || '';
+              fullContent += data.choices?.[0]?.delta?.content || '';
               if (data.choices?.[0]?.finish_reason) finishReason = data.choices[0].finish_reason;
-              if (data.usage) { promptTokens = data.usage.prompt_tokens || 0; completionTokens = data.usage.completion_tokens || 0; }
             } catch (e) {}
           });
           resolve();
@@ -217,15 +187,13 @@ app.post('/v1/chat/completions', async (req, res) => {
         response.data.on('error', reject);
       });
 
-      if (SHOW_REASONING && fullReasoning) fullContent = '<think>\n' + fullReasoning + '\n</think>\n\n' + fullContent;
-
       res.json({
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model,
         choices: [{ index: 0, message: { role: 'assistant', content: fullContent }, finish_reason: finishReason }],
-        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens }
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
       });
     }
 
@@ -250,6 +218,6 @@ app.all('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`OpenAI to Groq Proxy running on port ${PORT}`);
+  console.log(`OpenAI to Gemini Proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
 });
