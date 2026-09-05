@@ -15,14 +15,14 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Model mapping — Gemini model strings
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'gemini-2.5-flash-lite',
-  'gpt-4':         'gemini-2.5-flash',
-  'gpt-4-turbo':   'gemini-2.5-flash',
-  'gpt-4o':        'gemini-2.5-flash',
-  'claude-3-opus': 'gemini-2.5-flash',
-  'claude-3-sonnet':'gemini-2.5-flash-lite',
+  'gpt-3.5-turbo': 'gemini-3.1-flash-lite',
+  'gpt-4':         'gemini-3.8-flash',
+  'gpt-4-turbo':   'gemini-3.8-flash',
+  'gpt-4o':        'gemini-3.8-flash',
+  'claude-3-opus': 'gemini-3.8-flash',
+  'claude-3-sonnet':'gemini-3.1-flash-lite',
   'gemini-pro':    'gemini-3.8-flash',
-  'minimax':       'gemini-2.5-flash-lite'
+  'minimax':       'gemini-3.1-flash-lite'
 };
 
 // Trim old messages — Gemini has 1M context so limit is generous
