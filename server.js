@@ -17,12 +17,24 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'gemini-3.1-flash-lite',
   'gpt-4':         'gemini-3.8-flash',
-  'gpt-4-turbo':   'gemini-3.8-flash',
-  'gpt-4o':        'gemini-3.8-flash',
+  'gpt-4-turbo':   'gemini-3.1-flash-lite',
+  'gpt-4o':        'gemini-3.1-flash-lite',
   'claude-3-opus': 'gemini-3.8-flash',
   'claude-3-sonnet':'gemini-3.1-flash-lite',
-  'gemini-pro':    'gemini-3.8-flash',
+  'gemini-pro':    'gemini-3.1-flash-lite',
   'minimax':       'gemini-3.1-flash-lite'
+};
+
+// Rate limiter — keeps requests under Gemini's RPM caps
+const lastRequest = { flash: 0, lite: 0 };
+const waitForSlot = async (model) => {
+  const isLite   = model.includes('lite');
+  const spacing  = isLite ? 2100 : 4300; // 28 RPM for Lite, 14 RPM for Flash
+  const lastTime = isLite ? lastRequest.lite : lastRequest.flash;
+  const wait     = Math.max(0, spacing - (Date.now() - lastTime));
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  if (isLite) lastRequest.lite = Date.now();
+  else        lastRequest.flash = Date.now();
 };
 
 // Trim old messages — Gemini has 1M context so limit is generous
@@ -140,6 +152,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       }
     };
+
+    // Throttle to stay under Gemini's RPM limits
+    await waitForSlot(geminiModel);
 
     const response = await geminiFetch();
 
